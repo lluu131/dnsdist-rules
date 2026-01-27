@@ -1,74 +1,48 @@
-name: Daily Build & Release
+name: Update China Domain List
 
 on:
   schedule:
-    - cron: '0 4 * * *'  # 每天 UTC 04:00 (北京时间 12:00)
-  workflow_dispatch:      # 允许手动触发
+    # 每天北京时间 4:00 AM 运行 (UTC 20:00)
+    - cron: '0 20 * * *'
+  workflow_dispatch: # 允许手动点击按钮触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # 必须开启写权限，才能创建 release 和 push 代码
-
+    
     steps:
-      # 1. 检出本仓库代码
-      - name: Checkout own repo
-        uses: actions/checkout@v4
+    - name: Checkout codebase
+      uses: actions/checkout@v3
 
-      # 2. 检出 v2fly 官方数据 (放在 upstream 目录)
-      - name: Checkout v2fly/domain-list-community
-        uses: actions/checkout@v4
-        with:
-          repository: v2fly/domain-list-community
-          path: upstream
+    - name: Download and Process Data
+      run: |
+        echo "正在下载上游数据..."
+        # 下载 felixonmars 的列表
+        curl -sSL https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf -o raw.conf
+        
+        echo "正在预处理数据..."
+        # 使用 sed 命令进行清洗：
+        # 1. ^server=/ 删除行首的 server=/
+        # 2. /114.114.114.114$ 删除行尾的 IP（注意：上游IP可能变，这里用更通用的正则）
+        # 逻辑：匹配 / 之间的内容
+        sed -n 's|^server=/\(.*\)/.*$|\1|p' raw.conf > china_domains.txt
+        
+        # 删除临时文件
+        rm raw.conf
+        
+        # 统计行数
+        echo "处理完成，共提取 $(wc -l < china_domains.txt) 个域名。"
 
-      # 3. 设置 Python 环境
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      # 4. 运行转换脚本
-      # 假设你的脚本生成的文件在当前目录下，名为 cn-direct.txt
-      - name: Run conversion script
-        run: python3 scripts/convert.py
-
-      # 5. 准备发布目录 (关键步骤)
-      # 创建 publish 目录，并将生成的文件移动进去，供后续步骤使用
-      - name: Prepare publish directory
-        run: |
-          mkdir -p publish
-          mv cn-direct.txt publish/
-          # 可以在这里复制更多文件，例如: cp README.md publish/
-
-      # 6. 生成日期变量 (用于 Release 名字和 Tag)
-      - name: Generate vars
-        run: |
-          echo "RELEASE_NAME=Auto Build $(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
-          echo "TAG_NAME=$(date +'%Y%m%d%H%M')" >> $GITHUB_ENV
-
-      # 7. 推送到 release 分支 (你提供的代码)
-      # 这里的逻辑是把 publish 目录作为一个全新的分支提交，保持 release 分支干净
-      - name: Git push assets to "release" branch
-        run: |
-          cd publish || exit 1
-          git init
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b release
-          git add -A
-          git commit -m "${{ env.RELEASE_NAME }}"
-          git remote add geoip "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
-          git push -f -u geoip release
-
-      # 8. 上传到 GitHub Release (你提供的代码)
-      - name: Upload files to GitHub release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file_glob: true
-          file: ./publish/*
-          tag: ${{ env.TAG_NAME }}
-          release_name: ${{ env.RELEASE_NAME }}
-          overwrite: true
+    - name: Commit and Push changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # 检查是否有文件变化
+        if [[ -n $(git status -s) ]]; then
+          git add china_domains.txt
+          git commit -m "Auto-update: $(date +'%Y-%m-%d') domain list"
+          git push origin main
+        else
+          echo "No changes found."
+        fi
