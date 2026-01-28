@@ -1,48 +1,66 @@
-name: Update China Domain List
+name: Build and Publish Domain Lists
 
 on:
   schedule:
-    # 每天北京时间 4:00 AM 运行 (UTC 20:00)
-    - cron: '0 20 * * *'
-  workflow_dispatch: # 允许手动点击按钮触发
-
+    - cron: '0 */8 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - ".gitignore"
+      - "config-example.json"
+      - "LICENSE"
+      - "README.md"
+      - ".github/dependabot.yml"
+      
 jobs:
-  build:
+  build-and-publish:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout codebase
-      uses: actions/checkout@v3
+      - name: Checkout codebase
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
-    - name: Download and Process Data
-      run: |
-        echo "正在下载上游数据..."
-        # 下载 felixonmars 的列表
-        curl -sSL https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf -o raw.conf
-        
-        echo "正在预处理数据..."
-        # 使用 sed 命令进行清洗：
-        # 1. ^server=/ 删除行首的 server=/
-        # 2. /114.114.114.114$ 删除行尾的 IP（注意：上游IP可能变，这里用更通用的正则）
-        # 逻辑：匹配 / 之间的内容
-        sed -n 's|^server=/\(.*\)/.*$|\1|p' raw.conf > china_domains.txt
-        
-        # 删除临时文件
-        rm raw.conf
-        
-        # 统计行数
-        echo "处理完成，共提取 $(wc -l < china_domains.txt) 个域名。"
+      - name: Set variables
+        run: |
+          echo "TAG_NAME=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+          echo "RELEASE_NAME=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+          echo "CHINA_DOMAINS_URL=https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf" >> $GITHUB_ENV
+          echo "GOOGLE_DOMAINS_URL=https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/google.china.conf" >> $GITHUB_ENV
+          echo "APPLE_DOMAINS_URL=https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/apple.china.conf" >> $GITHUB_ENV
+          echo "CN_DIRECT_URL=https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt" >> $GITHUB_ENV
+        shell: bash
 
-    - name: Commit and Push changes
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-        # 检查是否有文件变化
-        if [[ -n $(git status -s) ]]; then
-          git add china_domains.txt
-          git commit -m "Auto-update: $(date +'%Y-%m-%d') domain list"
-          git push origin main
-        else
-          echo "No changes found."
-        fi
+      - name: Get and add domains into file
+        run: |
+          curl -sSL $CHINA_DOMAINS_URL | perl -ne '/^server=\/([^\/]+)\// && print "$1\n"' > ./accelerated-domains.china.txt
+          curl -sSL $APPLE_DOMAINS_URL | perl -ne '/^server=\/([^\/]+)\// && print "$1\n"' > ./apple.china.txt
+          curl -sSL $GOOGLE_DOMAINS_URL | perl -ne '/^server=\/([^\/]+)\// && print "$1\n"' > ./google.china.txt
+
+      - name: Move files to publish directory
+        run: |
+          mkdir -p publish
+          mv ./accelerated-domains.china.txt ./apple.china.txt ./google.china.txt ./publish/
+
+      - name: Git push assets to "release" branch
+        run: |
+          cd publish || exit 1
+          git init
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b release
+          git add -A
+          git commit -m "${{ env.RELEASE_NAME }}"
+          git remote add geoip "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git push -f -u geoip release
+
+      - name: Upload files to GitHub release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file_glob: true
+          file: ./publish/*
+          tag: ${{ env.TAG_NAME }}
